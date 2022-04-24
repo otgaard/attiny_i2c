@@ -6,6 +6,8 @@
  */ 
 
 #include "i2c_master.h"
+#include "mcp4725.h"
+#include <stdlib.h>
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -73,7 +75,7 @@ void lcd_char(uint8_t ch) {
 }
 
 void lcd_init() {
-	_delay_ms(20);			// LCD Power ON delay always >15ms	
+	_delay_ms(80);			// Delay > 80ms
 	lcd_command(0x02);		// Use 4-bit mode
 	lcd_command(0x28);      // 5 x 7, 2 line
 	lcd_command(0x0c);      // Cursor off
@@ -81,8 +83,8 @@ void lcd_init() {
 	_delay_ms(2);
 }
 
-void lcd_string(char* str) {
-	for(int i = 0; str[i] != 0; ++i) {
+void lcd_string(char* str, int max=16) {
+	for(int i = 0; str[i] != 0 && i != max; ++i) {
 		lcd_char(str[i]);
 	}
 }
@@ -94,16 +96,18 @@ void lcd_clear() {
 	_delay_ms(2);
 }
 
-char buffer0[16] = {' '};
-char buffer1[16] = {' '};
+char buffer0[17] = {0};
+char buffer1[17] = {0};
 
 uint8_t i2c_buffer[4] = {0};
-uint8_t i2c_copy[4] = {0};
 
 #define DS3231_ADDR_READ 0b11010001
 #define DS3231_ADDR_WRITE 0b11010000
 
-void getDateTime() {
+#define MC4725_ADDR_READ 0b1111111
+#define MC4725_ADDR_WRITE 0b1111110
+
+void get_date_time() {
 	start_i2c();
 	transmit_i2c(DS3231_ADDR_WRITE);
 	transmit_i2c(0x00); // Set start register
@@ -122,10 +126,6 @@ uint8_t bcd_to_bin(uint8_t byte) {
 	return 10 * ((byte & 0xF0) >> 4) + (byte & 0x0F);
 }
 
-uint8_t bcd_hours_to_bin(uint8_t byte) {
-	return 10 * ((byte & 0x03) >> 4) + (byte & 0x0F);
-}
-
 void bcd_to_char(uint8_t value, char* buffer) {
 	buffer[0] = (char)(0x30 + ((value & 0xF0) >> 4));
 	buffer[1] = (char)(0x30 + (value & 0x0F));
@@ -135,7 +135,7 @@ uint8_t dec_to_bcd(uint8_t value) {
 	return ((value / 10) << 4) + (value % 10);
 }
 
-void setTime(uint8_t hours, uint8_t minutes, uint8_t seconds) {
+void set_time(uint8_t hours, uint8_t minutes, uint8_t seconds) {
 	start_i2c();
 	transmit_i2c(DS3231_ADDR_WRITE);
 	transmit_i2c(0x00);
@@ -143,6 +143,21 @@ void setTime(uint8_t hours, uint8_t minutes, uint8_t seconds) {
 	transmit_i2c(dec_to_bcd(minutes));
 	transmit_i2c(dec_to_bcd(hours));
 	stop_i2c();	
+}
+
+void format_time(uint8_t offset) {
+	static uint8_t cached_offset = 0;
+	if(offset > 8) offset = 8;
+	if(cached_offset != offset) {
+		cached_offset = offset;
+		for(int i = 0; i != offset; ++i) buffer0[i] = 0x20;
+		buffer0[2+offset] = ':'; 
+		buffer0[5+offset] = ':';
+		for(int i = 8 - offset; i >= 0; --i) buffer0[offset+8+i] = 0x20;
+	}
+	bcd_to_char(i2c_buffer[0], &buffer0[6+offset]);
+	bcd_to_char(i2c_buffer[1], &buffer0[3+offset]);
+	bcd_to_char(i2c_buffer[2], &buffer0[offset]);
 }
 
 int main() {
@@ -156,19 +171,31 @@ int main() {
 	lcd_init();
 	setup_i2c();
 	
-	//setTime(16, 38, 00);	
+	uint8_t offset = 4;
+	uint8_t curr_min = 0;
+	uint8_t dir = 1;
+	uint16_t value = 0;
 	
 	while(true) {
-		lcd_clear();
-		getDateTime();
-		bcd_to_char(i2c_buffer[0], &buffer0[6]);
-		buffer0[2] = ':';
-		bcd_to_char(i2c_buffer[1], &(buffer0[3]));
-		buffer0[5] = ':';
-		bcd_to_char(i2c_buffer[2], &(buffer0[0]));
-		buffer0[9] = 0;
+		lcd_command(0x80);
+		get_date_time();
+		if(curr_min != i2c_buffer[1]) {
+			curr_min = i2c_buffer[1];
+			offset = dir ? offset + 1 : offset - 1;
+			if(offset == 8) dir = 0;
+			else if(offset == 0) dir = 1;
+		}
+		format_time(offset);
 		lcd_string(buffer0);
-		_delay_ms(200);
+		
+		lcd_command(0xC0);
+		sine_wave(&value);
+		itoa(int(value), buffer1, 10);
+		// Get rid of null
+		for(int i = 0; i != 4; ++i) {
+			if(buffer1[i] == 0) buffer1[i] = 0x20;
+		}
+		lcd_string(buffer1);		
 	}
 	
 	return 0;

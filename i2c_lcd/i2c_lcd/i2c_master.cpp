@@ -13,9 +13,7 @@
 #define HIGH 1
 #define LOW 0
 
-// Start off slow
-
-#define I2C_FREQ 10000
+#define I2C_FREQ 400000
 #define I2C_DUR (1000000UL / (2*I2C_FREQ))
 
 inline void set_i2c_pin(uint8_t pinMask, uint8_t value) {
